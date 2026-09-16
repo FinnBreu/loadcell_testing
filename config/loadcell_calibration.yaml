@@ -1,0 +1,22 @@
+# Raw channel to wrench calibration.
+#
+# The raw channel vector is assumed to be:
+# u = [u1, u2, u3, u4, u5, u6]
+#
+# The published wrench is:
+# [Fx, Fy, Fz, Tx, Ty, Tz] = matrix * (u - input_bias) - wrench_tare
+#
+# input_bias is in raw DAQ channel units. wrench_tare is in the calibrated
+# wrench units and is ordered [Fx, Fy, Fz, Tx, Ty, Tz].
+#
+# Matrix supplied for this sensor/electronics combination. Keep it paired with
+# the matching loadcell and ATI interface.
+matrix:
+  - [-0.08324, 0.00290, 0.17669, -3.70820, -0.05637, 3.81970]
+  - [-0.07778, 4.37904, 0.02880, -2.11956, 0.09870, -2.21913]
+  - [6.45408, -0.18907, 6.61419, -0.19745, 6.61576, -0.21483]
+  - [-0.00148, 0.05292, -0.19089, -0.02142, 0.19177, -0.03156]
+  - [0.21610, -0.00419, -0.11340, 0.04788, -0.10995, -0.04411]
+  - [0.00165, -0.11710, 0.00244, -0.11534, 0.00511, -0.11976]
+input_bias: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+wrench_tare: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
