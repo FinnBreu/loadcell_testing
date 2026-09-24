@@ -15,6 +15,7 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument("daq_ip", default_value="192.168.0.139"),
             DeclareLaunchArgument("input_filter", default_value="DC"),
+            DeclareLaunchArgument("lowpass_hz", default_value="7.5"),
             DeclareLaunchArgument("tare_window_sec", default_value="0.5"),
             DeclareLaunchArgument("debug_period", default_value="2.0"),
             Node(
@@ -31,6 +32,8 @@ def generate_launch_description() -> LaunchDescription:
                     LaunchConfiguration("daq_ip"),
                     "--input-filter",
                     LaunchConfiguration("input_filter"),
+                    "--lowpass-hz",
+                    LaunchConfiguration("lowpass_hz"),
                     "--tare-window-sec",
                     LaunchConfiguration("tare_window_sec"),
                     "--debug-period",

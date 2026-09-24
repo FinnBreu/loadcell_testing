@@ -1,13 +1,10 @@
 # loadcell_testing
 
-ROS 2 tools for the Schunk/ATI six-axis loadcell on the LAN-XI DAQ and for
-single-thruster bench sweeps. The loadcell publisher and motor sweep are
-independent processes.
+ROS 2 tools for the Schunk/ATI six-axis loadcell, LAN-XI DAQ, and
+single-thruster bench tests. The loadcell publisher and motor sweep run
+independently.
 
 ## Loadcell publisher
-
-Start one publisher and leave it running for troubleshooting, plotting,
-recording, and motor tests:
 
 ```bash
 ros2 launch loadcell_testing lanxi_loadcell_publisher.launch.py \
@@ -15,68 +12,33 @@ ros2 launch loadcell_testing lanxi_loadcell_publisher.launch.py \
   calibration_file:=loadcell_calibration.yaml
 ```
 
-The publisher explicitly configures all six channels with the LAN-XI `DC`
-filter mode, disabling the module's default 7 Hz high-pass filter. A different
-supported mode can be selected with `--input-filter` when intentionally needed.
+The publisher owns the LAN-XI recorder session at `192.168.0.139`, configures
+all six inputs. The publisher filters the full-rate stream before
+reducing its rate. Filters and range are set in the `lanxi_loadcell_publisher.py` header.
+Topics are:
 
-It owns the LAN-XI recorder session at `192.168.0.139` and publishes:
+- `/<vehicle_name>/loadcell/wrench`
+- `/<vehicle_name>/loadcell/channels` (filtered strain channels)
 
-- `/<vehicle_name>/loadcell/wrench` (`geometry_msgs/msg/WrenchStamped`)
-- `/<vehicle_name>/loadcell/channels` (`std_msgs/msg/Float64MultiArray`)
-
-After the stream has started, zero the unloaded wrench with:
+Zero and reset the session-only runtime tare with:
 
 ```bash
 ros2 service call /uuv02/loadcell/tare std_srvs/srv/Trigger "{}"
-```
-
-The service averages the most recent 0.5 seconds of calibrated wrench data and
-applies the result as a session-only runtime tare. Keep the loadcell unloaded
-and still during this interval. Reset only the runtime tare, returning to the
-YAML calibration and tare, with:
-
-```bash
 ros2 service call /uuv02/loadcell/reset_tare std_srvs/srv/Trigger "{}"
 ```
 
-The averaging window and service names can be changed with
-`--tare-window-sec`, `--tare-service`, and `--reset-tare-service`.
-
-The channel topic contains the six conditioned bridge voltages. The wrench is
-calculated as:
+Keep the loadcell unloaded while taring. Calibration is applied as:
 
 ```text
 wrench = matrix * (channels - input_bias) - wrench_tare - runtime_tare
 ```
 
-`input_bias` contains offsets in raw DAQ channel units. `wrench_tare` is
-ordered `[Fx, Fy, Fz, Tx, Ty, Tz]` in the calibrated force and torque units.
-Both vectors are independent and default to zero.
-
-ROS 2 executes the installed package, so a relative filename such as
-`loadcell_calibration.yaml` resolves to the copy under
-`install/loadcell_testing/share/loadcell_testing/config`. Rebuild after editing
-the source configuration. During calibration development, an explicit source
-path uses the edited file immediately:
-
-```bash
-ros2 run loadcell_testing lanxi_loadcell_publisher \
-  --vehicle-name uuv02 \
-  --calibration-file "$PWD/src/loadcell_testing/config/loadcell_calibration.yaml"
-```
-
-The publisher logs the fully resolved calibration path and both offset vectors
-at startup.
-
-The publisher emits the newest complete LAN-XI sample block immediately. Its
-periodic diagnostic includes `publish_age_ms`, parser CPU load, block sizes,
-source sample rates, and `parser_buffer_bytes`. Parse load is reported both for
-the latest diagnostic interval and cumulatively. The parser retains only an
-incomplete trailing LAN-XI message, not a queue of old measurement blocks.
+`input_bias` is in raw DAQ units. `wrench_tare` is ordered
+`[Fx, Fy, Fz, Tx, Ty, Tz]`.
 
 ## Thruster sweep
 
-With the publisher already running, start the motor sweep separately:
+Start the loadcell publisher first, then run:
 
 ```bash
 ros2 launch loadcell_testing single_thruster_sweep.launch.py \
@@ -85,34 +47,80 @@ ros2 launch loadcell_testing single_thruster_sweep.launch.py \
   arm_motors:=true
 ```
 
-The sweep commands ESC 1 (zero-based `--esc-index 0`) through the Pi-side ESC
-commander in the selected vehicle namespace. It arms and disarms only through
-`/<vehicle_name>/arm` and verifies both transitions on
-`/<vehicle_name>/arming_state`; it never calls the FCU services. The state
-confirmation is authoritative because the ESC commander may return
-`success=false` even after applying the requested state.
+The sweep commands ESC 1 and records thruster command, wrench, and battery
+voltage to:
 
-The wrench topic defaults to the relative `loadcell/wrench`, producing
-`/<vehicle_name>/loadcell/wrench`. The launch file defaults `arm_motors` to
-`false`, which performs a zero-command dry run. For direct invocation,
-`--vehicle-name uuv02` is equivalent to the launch argument.
+```text
+/home/finnb/ros2/data/thruster_loadcell_runs/<run>/
+```
 
-The sweep records the command and all relevant vehicle telemetry in separate,
-timestamped CSV streams under `thruster_loadcell_runs`:
+Export the recorded MCAP data before analysis:
 
-- `*_steps.csv`: command and sampling intervals
-- `*_commands.csv`: all eight commanded thruster values
-- `*_wrench.csv`: calibrated force and torque
-- `*_battery_state.csv`: pack voltage, current, charge state, and cell data
-- `*_esc_voltages.csv`: voltage reported by each ESC
-- `*_esc_rpms.csv`: RPM, revolution, and commutation counters for each ESC
-- `*_config.json`: run settings and per-stream sample counts
+```bash
+ros2 run tools export_csv \
+  --run /home/finnb/ros2/data/thruster_loadcell_runs/<run>
+```
 
-Every telemetry row includes receipt time, source timestamp, repeat, step,
-phase, and the current selected-thruster command. The default subscriptions are
-`/<vehicle_name>/loadcell/wrench`, `/<vehicle_name>/battery_state`,
-`/<vehicle_name>/esc_voltages`, and `/<vehicle_name>/esc_rpms`.
+## Thrust curve analysis
 
-Stopping or completing a sweep does not stop the loadcell publisher or touch
-the LAN-XI recorder state. If no wrench publisher is available, the sweep logs
-a warning and continues independently.
+Use only runs whose names include exactly one propeller marker (`_cw` or
+`_ccw`) and one stand marker (`_fwd` or `_rev`). Pass all runs together:
+
+```bash
+ros2 run loadcell_testing analyze_thruster_run \
+  --config src/loadcell_testing/config/thruster_analysis.yaml \
+  --run /home/finnb/ros2/data/thruster_loadcell_runs/20260924_* \
+  --no-show
+```
+
+`config/thruster_analysis.yaml` defines the motor position in loadcell axes, components, and signs. 
+
+Step means use each manifest's settling and sampling periods. Before sign
+normalization, all three torques are translated to the motor origin:
+
+```text
+M_motor = M_loadcell - cross(motor_position_m, F_loadcell)
+```
+
+The position stays fixed for FWD and REV. Translation preserves all measured points;
+it changes the torque reference point. Forces are unchanged.
+
+With `d = stand_signs[fwd/rev]` and `p = propeller_signs[cw/ccw]`:
+
+```text
+n = p * esc_command
+thrust = thrust_sign * d * F_selected
+roll_torque = roll_torque_sign * d * p * M_motor_selected
+```
+
+All runs are pooled for fitting. Results go to the sibling `analysis` directory
+(`--output-dir` overrides it). The fit YAML includes the effective configuration.
+Step CSVs retain the original loadcell wrench, add `motor_torque_x/y/z` in
+loadcell axes, and store the normalized thrust and roll torque used for fitting.
+
+All fits pass through the origin. Signed quadratics use:
+
+```text
+y = a * x * abs(x) + b * x
+```
+
+The fit YAML stores `[a, b]` under `coefficients`. The virtual command is based
+on the thrust fit:
+
+```text
+f(n) = q * n * abs(n) + l * n
+C_f = f(1) = q + l
+u = A * n * abs(n) + B * n
+A = q / C_f
+B = l / C_f
+```
+
+Under `models.virtual_command`, `coefficients` contains the forward mapping
+`[A, B]`, `thrust_coefficient` contains `C_f`, and `torque_coefficient`
+contains the proportional virtual-command-to-roll-torque coefficient.
+
+The exact inverse used for virtual-command plots and CSV data is:
+
+```text
+n = sign(u) * 2 * abs(u) / (B + sqrt(B^2 + 4 * A * abs(u)))
+```

@@ -1,0 +1,15 @@
+# Vector from loadcell origin to motor origin, in loadcell axes and metres.
+# Down is +y. FWD/REV changes motor orientation, not this position.
+# Translate first: M_motor = M_loadcell - cross(motor_position_m, F).
+motor_position_m: [0.0, 0.23, 0.10]
+
+thrust_component: force_z
+roll_torque_component: torque_z
+thrust_sign: 1
+roll_torque_sign: 1
+
+# After translation: thrust *= thrust_sign * stand_sign;
+# torque *= roll_torque_sign * stand_sign * propeller_sign.
+stand_signs: {fwd: 1, rev: -1}
+# Also normalizes the ESC command: n = propeller_sign * esc_command.
+propeller_signs: {ccw: 1, cw: -1}

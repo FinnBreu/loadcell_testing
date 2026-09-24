@@ -13,9 +13,10 @@ setup(
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/config', glob('config/*.yaml')),
+        ('share/' + package_name + '/docs', glob('docs/*.tex')),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
     ],
-    install_requires=['setuptools', 'numpy', 'requests', 'PyYAML'],
+    install_requires=['setuptools', 'matplotlib', 'numpy', 'requests', 'scipy', 'PyYAML'],
     zip_safe=True,
     maintainer='Finn Breuer',
     maintainer_email='finn.breuer@tuhh.de',
@@ -25,6 +26,7 @@ setup(
         'console_scripts': [
             'lanxi_loadcell_publisher = loadcell_testing.lanxi_loadcell_publisher:main',
             'single_thruster_sweep = loadcell_testing.single_thruster_sweep:main',
+            'analyze_thruster_run = loadcell_testing.analyze_thruster_run:main',
         ],
     },
 )

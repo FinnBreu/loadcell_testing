@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import rclpy
+from scipy.signal import butter, sosfilt, sosfilt_zi
 from ament_index_python.packages import PackageNotFoundError, get_package_share_path
 from geometry_msgs.msg import WrenchStamped
 from rclpy.node import Node
@@ -48,6 +49,7 @@ DESCRIPTOR_OFFSET = 3
 DESCRIPTOR_PERIOD_TIME = 4
 DESCRIPTOR_UNIT = 5
 SIGNED_24BIT_FULL_SCALE = 2**23
+INPUT_RANGE = "31.6 Vpeak"
 INPUT_FILTERS = (
     "DC",
     "0.1 Hz 10%",
@@ -206,7 +208,54 @@ def configure_input_channels(setup: dict, input_filter: str) -> dict:
     for channel in setup.get("channels", []):
         channel["destinations"] = ["socket"]
         channel["filter"] = input_filter
+        channel["range"] = INPUT_RANGE
     return setup
+
+
+class LowPassResampler:
+    """Low-pass synchronized DAQ samples before reducing them to 25 Hz."""
+
+    OUTPUT_RATE_HZ = 25
+
+    def __init__(self, cutoff_hz: float = 7.5) -> None:
+        self.cutoff_hz = cutoff_hz
+        self.sample_rate_hz: int | None = None
+        self.sos: np.ndarray | None = None
+        self.zi: np.ndarray | None = None
+        self.phase = 0
+
+    def process(self, samples: np.ndarray, sample_rate_hz: float) -> np.ndarray:
+        rate = int(round(sample_rate_hz))
+        if not np.isclose(sample_rate_hz, rate, rtol=0.0, atol=0.01):
+            raise ValueError(
+                f"Unsupported non-integer LAN-XI sample rate {sample_rate_hz}"
+            )
+        if self.sample_rate_hz is None:
+            if not 0.0 < self.cutoff_hz < self.OUTPUT_RATE_HZ / 2:
+                raise ValueError("low-pass cutoff must be between 0 and 12.5 Hz")
+            if self.OUTPUT_RATE_HZ >= rate / 2:
+                raise ValueError("LAN-XI sample rate must exceed 50 Hz")
+            self.sample_rate_hz = rate
+            self.sos = butter(
+                8, self.cutoff_hz, btype="lowpass", fs=rate, output="sos"
+            )
+        elif self.sample_rate_hz != rate:
+            raise ValueError(
+                f"LAN-XI sample rate changed from {self.sample_rate_hz} to {rate} Hz"
+            )
+
+        if samples.size == 0:
+            return np.empty((0, 6), dtype=np.float64)
+        if self.zi is None:
+            self.zi = sosfilt_zi(self.sos)[:, :, None] * samples[0][None, None, :]
+        filtered, self.zi = sosfilt(self.sos, samples, axis=0, zi=self.zi)
+
+        sample_indices = np.arange(1, len(filtered) + 1, dtype=np.int64)
+        crossings = (sample_indices * self.OUTPUT_RATE_HZ + self.phase) // rate
+        previous = np.concatenate(([0], crossings[:-1]))
+        selected = filtered[crossings != previous]
+        self.phase = int((len(filtered) * self.OUTPUT_RATE_HZ + self.phase) % rate)
+        return selected
 
 
 class OpenApiStreamParser:
@@ -217,20 +266,19 @@ class OpenApiStreamParser:
         self.buffer = bytearray()
         self.meta: dict[int, SignalMeta] = {}
         self.signal_order: list[int] = []
-        self.latest_signal_values: dict[int, float] = {}
+        self.latest_signal_values: dict[int, np.ndarray] = {}
         self.updated_signals: set[int] = set()
         self.last_block_sizes: dict[int, int] = {}
         self.total_bytes = 0
         self.message_counts: dict[int, int] = {}
         self.signal_counts: dict[int, int] = {}
-        self.vector_count = 0
         self.bad_magic_count = 0
         self.header_lengths: dict[int, int] = {}
 
-    def feed(self, data: bytes) -> list[list[float]]:
+    def feed(self, data: bytes) -> list[np.ndarray]:
         self.total_bytes += len(data)
         self.buffer.extend(data)
-        samples: list[list[float]] = []
+        samples: list[np.ndarray] = []
         while True:
             if len(self.buffer) < HEADER_LENGTH:
                 break
@@ -290,12 +338,18 @@ class OpenApiStreamParser:
             pos = end
             pos += (4 - (pos % 4)) & 3
 
-    def _parse_signal_data(self, payload: bytes) -> list[list[float]]:
+    def sample_rate_hz(self) -> float | None:
+        if not self.signal_order:
+            return None
+        meta = self.meta.get(self.signal_order[0])
+        return 1.0 / meta.period if meta and meta.period else None
+
+    def _parse_signal_data(self, payload: bytes) -> list[np.ndarray]:
         if len(payload) < 4:
             return []
         number_of_signals = struct.unpack_from("<H", payload, 0)[0]
         pos = 4
-        vectors: list[list[float]] = []
+        vectors: list[np.ndarray] = []
         for _ in range(number_of_signals):
             if pos + 4 > len(payload):
                 return []
@@ -317,9 +371,8 @@ class OpenApiStreamParser:
                 | (encoded[:, 2].astype(np.int32) << 16)
             )
             raw[raw >= 0x800000] -= 0x1000000
-            mean_raw = float(np.mean(raw))
             self.latest_signal_values[signal_id] = (
-                mean_raw * meta.scale_factor / SIGNED_24BIT_FULL_SCALE
+                raw.astype(np.float64) * meta.scale_factor / SIGNED_24BIT_FULL_SCALE
                 + meta.offset
             )
             self.updated_signals.add(signal_id)
@@ -337,11 +390,17 @@ class OpenApiStreamParser:
         if len(ordered) < self.channel_count:
             return []
         if all(signal_id in self.updated_signals for signal_id in ordered):
-            vectors.append([
+            channels = [
                 self.latest_signal_values[signal_id] for signal_id in ordered
-            ])
+            ]
+            lengths = {len(channel) for channel in channels}
+            if len(lengths) != 1:
+                raise ValueError(
+                    "Synchronized LAN-XI channel blocks differ in size: "
+                    f"{lengths}"
+                )
+            vectors.append(np.column_stack(channels))
             self.updated_signals.difference_update(ordered)
-            self.vector_count += 1
         return vectors
 
 
@@ -361,6 +420,7 @@ class LanXiStreamClient:
         self.base_url = self._base_url(host)
         self.sock: socket.socket | None = None
         self.configured_filters: list[str] = []
+        self.configured_ranges: list[str] = []
         self._owns_recorder = False
 
     @staticmethod
@@ -459,6 +519,18 @@ class LanXiStreamClient:
                 f"{self.input_filter!r}; reported filters="
                 f"{self.configured_filters}"
             )
+        self.configured_ranges = [
+            channel.get("range", "")
+            for channel in applied_setup.get("channels", [])
+            if channel.get("enabled", False)
+        ]
+        if not self.configured_ranges or any(
+            value != INPUT_RANGE for value in self.configured_ranges
+        ):
+            raise RuntimeError(
+                f"LAN-XI did not apply input range {INPUT_RANGE!r}; "
+                f"reported ranges={self.configured_ranges}"
+            )
         port = self._request("GET", "/destination/socket").json()["tcpPort"]
         self.sock = socket.create_connection((self.host, port), timeout=10)
         self.sock.settimeout(0.5)
@@ -506,6 +578,7 @@ class LoadcellPublisher(Node):
         self.args = args
         self.frame_id = args.frame_id
         self.parser = OpenApiStreamParser(channel_count=6)
+        self.resampler = LowPassResampler(args.lowpass_hz)
         self.client = LanXiStreamClient(
             args.daq_ip,
             input_filter=args.input_filter,
@@ -539,7 +612,6 @@ class LoadcellPublisher(Node):
         self.max_parse_seconds = 0.0
         self.last_publish_age_ms = 0.0
         self.published_vectors = 0
-        self.discarded_vectors = 0
         self.running = True
         self.reader_thread = threading.Thread(target=self._read_loop, daemon=True)
         self.debug_timer = self.create_timer(args.debug_period, self._log_debug)
@@ -553,7 +625,10 @@ class LoadcellPublisher(Node):
             f"{self.array_pub.topic_name}"
         )
         self.get_logger().info(
-            f"LAN-XI input filters: {self.client.configured_filters}"
+            f"LAN-XI input filters: {self.client.configured_filters}; "
+            f"ranges: {self.client.configured_ranges}"
+            f"; software low-pass: {self.resampler.cutoff_hz:g} Hz, "
+            f"output: {self.resampler.OUTPUT_RATE_HZ} Hz"
             + (" (high-pass disabled)" if self.args.input_filter == "DC" else "")
         )
         if self.calibration is None:
@@ -599,23 +674,30 @@ class LoadcellPublisher(Node):
             received_monotonic = time.monotonic()
             try:
                 with self.parser_lock:
-                    vectors = self.parser.feed(data)
+                    blocks = self.parser.feed(data)
+                    sample_rate_hz = self.parser.sample_rate_hz()
+                if blocks and sample_rate_hz is None:
+                    raise ValueError("LAN-XI stream has no sample-rate metadata")
+                filtered_blocks = [
+                    self.resampler.process(block, sample_rate_hz)
+                    for block in blocks
+                ] if sample_rate_hz is not None else []
             except Exception as exc:
-                self.get_logger().error(f"LAN-XI stream parse error: {exc}")
+                self.get_logger().error(f"LAN-XI stream processing error: {exc}")
                 break
+
             parse_seconds = time.monotonic() - received_monotonic
             with self.stats_lock:
                 self.total_parse_seconds += parse_seconds
                 self.max_parse_seconds = max(
                     self.max_parse_seconds, parse_seconds
                 )
-                if len(vectors) > 1:
-                    self.discarded_vectors += len(vectors) - 1
-            if vectors:
-                self._publish_values(vectors[-1], received_monotonic)
+            for filtered in filtered_blocks:
+                for values in filtered:
+                    self._publish_values(values, received_monotonic)
 
     def _publish_values(
-        self, values: list[float], received_monotonic: float
+        self, values: np.ndarray, received_monotonic: float
     ) -> None:
         stamp = self.get_clock().now().to_msg()
 
@@ -637,12 +719,12 @@ class LoadcellPublisher(Node):
         array = Float64MultiArray()
         array.layout.dim = [
             MultiArrayDimension(
-                label="raw_strain_channels",
+                label="filtered_strain_channels",
                 size=len(values),
                 stride=len(values),
             )
         ]
-        array.data = values
+        array.data = values.tolist()
         self.array_pub.publish(array)
         with self.stats_lock:
             self.published_vectors += 1
@@ -717,7 +799,6 @@ class LoadcellPublisher(Node):
             max_parse_ms = self.max_parse_seconds * 1000.0
             publish_age_ms = self.last_publish_age_ms
             published = self.published_vectors
-            discarded = self.discarded_vectors
             self.last_debug_parse_seconds = self.total_parse_seconds
             self.last_debug_monotonic = now
         self.get_logger().info(
@@ -731,7 +812,6 @@ class LoadcellPublisher(Node):
             f"units={units}, "
             f"sample_rates={sample_rates}, "
             f"published={published}, "
-            f"discarded={discarded}, "
             f"publish_age_ms={publish_age_ms:.2f}, "
             f"parse_load_interval={parse_load_interval:.1f}%, "
             f"parse_load_total={parse_load_total:.1f}%, "
@@ -779,6 +859,12 @@ def build_parser() -> argparse.ArgumentParser:
             "when omitted."
         ),
     )
+    parser.add_argument(
+        "--lowpass-hz",
+        type=float,
+        default=7.5,
+        help="software low-pass cutoff before 25 Hz publishing (default: 7.5 Hz)",
+    )
     parser.add_argument("--debug-period", type=float, default=2.0)
     parser.add_argument("--teds", action="store_true", help="run TEDS detection")
     return parser
@@ -789,6 +875,8 @@ def main() -> None:
     args = parser.parse_args(remove_ros_args(args=sys.argv)[1:])
     if args.debug_period <= 0.0:
         parser.error("--debug-period must be positive")
+    if not 0.0 < args.lowpass_hz < 12.5:
+        parser.error("--lowpass-hz must be between 0 and 12.5")
     if args.tare_window_sec <= 0.0:
         parser.error("--tare-window-sec must be positive")
     rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
