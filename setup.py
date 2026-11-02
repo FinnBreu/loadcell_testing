@@ -24,9 +24,10 @@ setup(
     license='GPLv2',
     entry_points={
         'console_scripts': [
-            'lanxi_loadcell_publisher = loadcell_testing.lanxi_loadcell_publisher:main',
-            'single_thruster_sweep = loadcell_testing.single_thruster_sweep:main',
-            'analyze_thruster_run = loadcell_testing.analyze_thruster_run:main',
+            'lanxi_loadcell_publisher = loadcell_testing.run.lanxi_loadcell_publisher:main',
+            'single_thruster_sweep = loadcell_testing.run.single_thruster_sweep:main',
+            'analyze_thruster_run = loadcell_testing.analysis.analyze_thruster_run:main',
+            'analyze_thruster_transients = loadcell_testing.analysis.analyze_thruster_transients:main',
         ],
     },
 )

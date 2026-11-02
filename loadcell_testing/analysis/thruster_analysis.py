@@ -66,7 +66,7 @@ class RunSeries:
     motor_torques: np.ndarray
     propeller_rotation: str
     stand_sign: int
-    propeller_sign: int
+    propeller_thrust_sign: int = 1
 
 
 @dataclass(frozen=True)
@@ -350,12 +350,16 @@ def load_run_series(
         )
     propeller_rotation = next(iter(rotations))
     stand_direction = next(iter(directions))
-    propeller_sign = config.propeller_signs[propeller_rotation]
+    propeller_thrust_sign = (
+        config.propeller_signs[propeller_rotation]
+        if config.propeller_signs is not None
+        else 1
+    )
     stand_sign = config.stand_signs[stand_direction]
     forces = np.asarray([[s.force_x, s.force_y, s.force_z] for s in steps])
     torques = np.asarray([[s.torque_x, s.torque_y, s.torque_z] for s in steps])
     # Fixed geometry makes translation commute with time averaging. Translate
-    # in loadcell coordinates before applying any mounting/propeller signs.
+    # in loadcell coordinates before applying the mounting sign.
     motor_torques = torques - np.cross(config.motor_position_m, forces)
     torque_axis = ("torque_x", "torque_y", "torque_z").index(config.roll_torque_component)
     return RunSeries(
@@ -364,16 +368,16 @@ def load_run_series(
         stand_direction=stand_direction,
         propeller_rotation=propeller_rotation,
         stand_sign=stand_sign,
-        propeller_sign=propeller_sign,
+        propeller_thrust_sign=propeller_thrust_sign,
         steps=tuple(steps),
         motor_torques=motor_torques,
-        speeds=propeller_sign * np.asarray([step.speed for step in steps]),
+        speeds=np.asarray([step.speed for step in steps]),
         thrust=config.thrust_sign
         * stand_sign
+        * propeller_thrust_sign
         * np.asarray([getattr(step, config.thrust_component) for step in steps]),
         roll_torque=config.roll_torque_sign
         * stand_sign
-        * propeller_sign
         * motor_torques[:, torque_axis],
     )
 

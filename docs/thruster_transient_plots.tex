@@ -1,0 +1,49 @@
+% Requires pgfplots. Define mumblue and mumred in the parent document.
+% Copy analysis/transient/csv/*.csv to data/thruster, or redefine this path.
+\providecommand{\thrusterplotdatadir}{data/thruster}
+
+\begin{tikzpicture}
+\begin{axis}[
+    scale only axis,
+    width=0.8\linewidth,
+    height=0.4\linewidth,
+    xmin=-0.3, xmax=1.0,
+    ymin=-0.6, ymax=2.2,
+    xlabel={Time from command transition [s]},
+    ylabel={Normalized step response},
+    xmajorgrids, ymajorgrids,
+    unbounded coords=jump,
+    legend style={at={(0.99,0.97)}, anchor=north east,
+        legend cell align=left, font=\scriptsize, inner sep=2pt},
+]
+
+\addplot[forget plot, no marks, mumblue, opacity=0.3, line width=0.3pt]
+    table[x=time_s, y=thrust_unit, col sep=comma]
+    {\thrusterplotdatadir/thruster_transient_start_curves.csv};
+
+% In the CSV, stop thrust falls from 1 to 0. Reflect it to rise from 0 to 1.
+\addplot[no marks, mumblue, opacity=0.3, line width=0.3pt]
+    table[x=time_s, y expr={1-\thisrow{thrust_unit}}, col sep=comma]
+    {\thrusterplotdatadir/thruster_transient_stop_curves.csv};
+\addlegendentry{Measurements}
+
+% The transformed stop model curves equal the start model curves.
+\addplot[black, dashed, thick]
+    table[x=time_s, y=start_first_order_no_delay, col sep=comma]
+    {\thrusterplotdatadir/thruster_transient_models.csv};
+\addlegendentry{First order, no delay}
+\addplot[black, thick]
+    table[x=time_s, y=start_first_order, col sep=comma]
+    {\thrusterplotdatadir/thruster_transient_models.csv};
+\addlegendentry{First order, residual delay}
+\addplot[mumred, thick]
+    table[x=time_s, y=start_second_order, col sep=comma]
+    {\thrusterplotdatadir/thruster_transient_models.csv};
+\addlegendentry{Second order}
+\addplot[gray, dotted, thick]
+    table[x=time_s, y=start_virtual_command_unit, col sep=comma]
+    {\thrusterplotdatadir/thruster_transient_models.csv};
+\addlegendentry{Virtual command}
+
+\end{axis}
+\end{tikzpicture}

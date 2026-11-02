@@ -26,11 +26,15 @@ class AnalysisResult:
     paths: AnalysisPaths
 
 
-def _default_analysis_dir(run_dirs: list[Path]) -> Path:
+def _default_analysis_root(run_dirs: list[Path]) -> Path:
     common_parent = Path(
         os.path.commonpath([str(run_dir.parent) for run_dir in run_dirs])
     )
     return common_parent / "analysis"
+
+
+def _default_analysis_dir(run_dirs: list[Path]) -> Path:
+    return _default_analysis_root(run_dirs) / "steady_state"
 
 
 def analyze_runs(
@@ -110,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-dir",
-        help="analysis directory; defaults to a sibling analysis directory",
+        help="steady-state output directory; defaults to sibling analysis/steady_state",
     )
     parser.add_argument(
         "--thrust-component",

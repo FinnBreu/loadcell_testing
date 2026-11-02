@@ -8,12 +8,12 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from loadcell_testing.analysis_config import load_analysis_config
-from loadcell_testing.analyze_thruster_run import (
+from loadcell_testing.analysis.analysis_config import load_analysis_config
+from loadcell_testing.analysis.analyze_thruster_run import (
     _default_analysis_dir,
     build_parser as build_analysis_parser,
 )
-from loadcell_testing.thruster_analysis import (
+from loadcell_testing.analysis.thruster_analysis import (
     AnalysisFits,
     CurveFit,
     RunSeries,
@@ -24,13 +24,13 @@ from loadcell_testing.thruster_analysis import (
     load_step_averages,
     virtual_command_from_actual,
 )
-from loadcell_testing.thruster_analysis_report import (
+from loadcell_testing.analysis.thruster_analysis_report import (
     _fit_dict,
     _write_plot_data,
     build_plot_data,
     fit_yaml_data,
 )
-from loadcell_testing.lanxi_loadcell_publisher import (
+from loadcell_testing.run.lanxi_loadcell_publisher import (
     HEADER_LENGTH,
     MESSAGE_SIGNAL_DATA,
     Calibration,
@@ -40,7 +40,7 @@ from loadcell_testing.lanxi_loadcell_publisher import (
     configure_input_channels,
     build_parser as build_publisher_parser,
 )
-from loadcell_testing.single_thruster_sweep import (
+from loadcell_testing.run.single_thruster_sweep import (
     build_parser as build_sweep_parser,
     normalize_speed_argument,
     parse_float_list,
@@ -94,11 +94,11 @@ class LoadcellTestingTest(unittest.TestCase):
 
         self.assertEqual(
             _default_analysis_dir([parent / "run-a"]),
-            parent / "analysis",
+            parent / "analysis" / "steady_state",
         )
         self.assertEqual(
             _default_analysis_dir([parent / "run-a", parent / "run-b"]),
-            parent / "analysis",
+            parent / "analysis" / "steady_state",
         )
 
     def test_fit_yaml_uses_simple_coefficient_name(self) -> None:
@@ -121,11 +121,11 @@ class LoadcellTestingTest(unittest.TestCase):
                 steps=(),
                 speeds=np.asarray([-0.5, 0.5]),
                 thrust=np.asarray([-2.0, 2.0]),
-                roll_torque=np.asarray([0.1, -0.1]),
+                roll_torque=np.asarray([0.1, -0.1] if index == 0 else [0.12, -0.08]),
                 motor_torques=np.zeros((2, 3)),
-                propeller_rotation="ccw",
+                propeller_rotation=("ccw", "cw")[index],
                 stand_sign=sign,
-                propeller_sign=1,
+                propeller_thrust_sign=(1, -1)[index],
             )
             for index, (direction, sign) in enumerate((("fwd", 1), ("rev", -1)))
         ]
@@ -194,6 +194,22 @@ class LoadcellTestingTest(unittest.TestCase):
         self.assertEqual(
             {row["loadcell_sign"] for row in rows}, {"-1", "1"}
         )
+        self.assertEqual({row["propeller_thrust_sign"] for row in rows}, {"1", "-1"})
+        for index, row in enumerate(rows):
+            run = runs[index // 2]
+            self.assertEqual(row["normalized_thruster_command"], row["esc_command"])
+            self.assertAlmostEqual(
+                float(row["vehicle_roll_torque"]),
+                run.roll_torque[index % 2],
+            )
+            self.assertAlmostEqual(
+                float(row["esc_command"]),
+                run.speeds[index % 2],
+            )
+            self.assertAlmostEqual(
+                float(row["vehicle_thrust"]),
+                run.thrust[index % 2],
+            )
 
     def test_step_averages_respect_settling_and_sampling_windows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -392,9 +408,12 @@ class LoadcellTestingTest(unittest.TestCase):
 
         self.assertEqual(parser.feed(message[:17]), [])
         self.assertEqual(len(parser.buffer), 17)
-        self.assertEqual(
-            parser.feed(message[17:]),
-            [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]],
+        blocks = parser.feed(message[17:])
+        self.assertEqual(len(blocks), 1)
+        np.testing.assert_array_equal(
+            blocks[0],
+            [[-2.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+             [4.0, 3.0, 4.0, 5.0, 6.0, 7.0]],
         )
         self.assertEqual(len(parser.buffer), 0)
         self.assertEqual(

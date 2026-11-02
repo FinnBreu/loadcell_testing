@@ -89,6 +89,7 @@ def _write_analysis_averages(path: Path, runs: list[RunSeries]) -> None:
         "run_id",
         *asdict(runs[0].steps[0]),
         *motor_columns,
+        "esc_command",
         "normalized_thruster_command",
         "vehicle_thrust",
         "vehicle_roll_torque",
@@ -106,6 +107,7 @@ def _write_analysis_averages(path: Path, runs: list[RunSeries]) -> None:
                         "run_id": run.run_id,
                         **asdict(step),
                         **dict(zip(motor_columns, motor_torque, strict=True)),
+                        "esc_command": command,
                         "normalized_thruster_command": command,
                         "vehicle_thrust": thrust,
                         "vehicle_roll_torque": torque,
@@ -132,7 +134,7 @@ def _write_plot_data(
         "stand_direction",
         "loadcell_sign",
         "propeller_rotation",
-        "propeller_command_sign",
+        "propeller_thrust_sign",
         "esc_command",
         "normalized_thruster_command",
         "virtual_command",
@@ -151,8 +153,8 @@ def _write_plot_data(
                     "stand_direction": run.stand_direction,
                     "loadcell_sign": run.stand_sign,
                     "propeller_rotation": run.propeller_rotation,
-                    "propeller_command_sign": run.propeller_sign,
-                    "esc_command": command * run.propeller_sign,
+                    "propeller_thrust_sign": run.propeller_thrust_sign,
+                    "esc_command": command,
                     "normalized_thruster_command": command,
                     "virtual_command": virtual,
                     "vehicle_thrust": thrust,
@@ -170,6 +172,7 @@ def _write_plot_data(
     _write_columns(
         path / "thruster_command_fits.csv",
         {
+            "esc_command": data.command,
             "normalized_thruster_command": data.command,
             "vehicle_thrust_proportional": data.thrust_proportional,
             "vehicle_thrust_quadratic": data.thrust_quadratic,
@@ -181,6 +184,7 @@ def _write_plot_data(
         path / "thruster_virtual_command_fits.csv",
         {
             "virtual_command": data.command,
+            "esc_command": data.actual_command,
             "normalized_thruster_command": data.actual_command,
             "vehicle_thrust": data.virtual_thrust,
             "vehicle_roll_torque": data.virtual_torque,
@@ -208,7 +212,7 @@ def fit_yaml_data(
                 "stand_direction": run.stand_direction,
                 "loadcell_sign": run.stand_sign,
                 "propeller_rotation": run.propeller_rotation,
-                "propeller_command_sign": run.propeller_sign,
+                "propeller_thrust_sign": run.propeller_thrust_sign,
             }
             for run in runs
         ],
@@ -273,7 +277,7 @@ def plot_analysis(
     import matplotlib.pyplot as plt
 
     colors = plt.get_cmap("tab10")
-    figure, axes = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
+    figure, axes = plt.subplots(2, 1, figsize=(12, 8))
     series = (
         (
             axes[0],
@@ -318,11 +322,12 @@ def plot_analysis(
         )
         axis.set_ylabel(ylabel)
         _legend(axis)
-    axes[1].set_xlabel("Normalized thruster command")
+    axes[0].set_xlabel("ESC command")
+    axes[1].set_xlabel("ESC command")
     figure.tight_layout()
     figure.savefig(paths.command_plot, dpi=180)
 
-    figure, axes = plt.subplots(3, 1, figsize=(12, 10), sharex=True)
+    figure, axes = plt.subplots(3, 1, figsize=(12, 10))
     axes[0].plot(
         data.command,
         data.actual_command,
@@ -340,7 +345,9 @@ def plot_analysis(
             label=run.run_id,
             alpha=0.85,
         )
-        axes[2].scatter(virtual, run.roll_torque, color=color, alpha=0.85)
+        axes[2].scatter(
+            virtual, run.roll_torque, color=color, alpha=0.85
+        )
     axes[1].plot(
         data.command,
         data.virtual_thrust,
@@ -355,9 +362,11 @@ def plot_analysis(
         color="#202020",
         label="Proportional",
     )
-    axes[0].set_ylabel("Normalized thruster command")
+    axes[0].set_ylabel("ESC command")
     axes[1].set_ylabel("Vehicle thrust [N]")
     axes[2].set_ylabel("Vehicle roll torque [N m]")
+    axes[0].set_xlabel("Thrust virtual command")
+    axes[1].set_xlabel("Thrust virtual command")
     axes[2].set_xlabel("Virtual command")
     for axis in axes:
         _legend(axis)

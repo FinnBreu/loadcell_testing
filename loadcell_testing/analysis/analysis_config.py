@@ -17,7 +17,7 @@ class AnalysisConfig:
     thrust_sign: int
     roll_torque_sign: int
     stand_signs: dict[str, int]
-    propeller_signs: dict[str, int]
+    propeller_signs: dict[str, int] | None = None
 
     def __post_init__(self) -> None:
         position = self.motor_position_m
@@ -35,21 +35,23 @@ class AnalysisConfig:
         if self.roll_torque_component not in {"torque_x", "torque_y", "torque_z"}:
             raise ValueError(f"invalid roll torque component: {self.roll_torque_component}")
         signs = [self.thrust_sign, self.roll_torque_sign]
-        for name, keys in (
-            ("stand_signs", {"fwd", "rev"}),
-            ("propeller_signs", {"cw", "ccw"}),
-        ):
-            mapping = getattr(self, name)
-            if not isinstance(mapping, dict) or set(mapping) != keys:
-                raise ValueError(f"{name} must define exactly {sorted(keys)}")
-            signs.extend(mapping.values())
+        if not isinstance(self.stand_signs, dict) or set(self.stand_signs) != {"fwd", "rev"}:
+            raise ValueError("stand_signs must define exactly ['fwd', 'rev']")
+        signs.extend(self.stand_signs.values())
+        if self.propeller_signs is not None:
+            if (
+                not isinstance(self.propeller_signs, dict)
+                or set(self.propeller_signs) != {"cw", "ccw"}
+            ):
+                raise ValueError("propeller_signs must define exactly ['ccw', 'cw']")
+            signs.extend(self.propeller_signs.values())
         if any(type(sign) is not int or sign not in (-1, 1) for sign in signs):
             raise ValueError("all analysis signs must be integers +1 or -1")
 
 
 def load_analysis_config(path: str | Path | None = None) -> AnalysisConfig:
     if path is None:
-        path = Path(__file__).resolve().parents[1] / "config/thruster_analysis.yaml"
+        path = Path(__file__).resolve().parents[2] / "config/thruster_analysis.yaml"
         if not path.is_file():
             from ament_index_python.packages import get_package_share_path
 
